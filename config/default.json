@@ -3,6 +3,8 @@
 		"host": "0.0.0.0",
 		"port": 4000
 	},
+	"apiUrl": "https://first-api.dotoracle.network",
+	"apiUrlRemote": "https://first-api.dotoracle.network",
 	"nativeAddress": "0x1111111111111111111111111111111111111111",
 	"logs": {
 		"level": "debug"

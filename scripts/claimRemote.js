@@ -13,7 +13,7 @@ const toChainId = args[1]
 const privateKey = process.env.PRIVATE_KEY
 const rpcFrom = config.get(`blockchain.${fromChainId}.httpProvider`)
 const rpcTo = config.get(`blockchain.${toChainId}.httpProvider`)
-const singer = require('./signer')
+const singer = require('./requestSigner')
 
 const bridgeAddressFrom = config.get(`contracts.${fromChainId}.bridge`)
 const bridgeAddressTo = config.get(`contracts.${toChainId}.bridge`)
@@ -22,33 +22,17 @@ const gasPrice = '20000000000'
 const log = console.log
 const nativeAddress = config.get('nativeAddress')
 
+const axios = require('axios')
 
-async function readingAllEvents(ctr, fromBlock, endBlock) {
-	let from = fromBlock 
-	let eventList = []
-	while(from < endBlock) {
-		let to = from + 4999
-		if (to > endBlock) {
-			to = endBlock
-		}
-		try {
-			console.log('reading', from, to)
-			let events = await ctr.getPastEvents('RequestBridge', {
-				fromBlock: from,
-				toBlock: to
-			});
-			from = to
-			events.forEach(e => {
-				eventList.push(e)
-			});
-		} catch(e) {
-			console.log('error:', e)
-		}
-	}
-	return eventList
+async function requestTxes(acc, networkId) {
+	let apiUrl = config.get('apiUrl')
+	apiUrl = `${apiUrl}/transactions/${acc.toLowerCase()}/${networkId}`
+
+	let txes = await axios.get(apiUrl)
+	return txes.data.transactions
 }
 
-async function requestBridge() {
+async function claimToken() {
 	const web3From = new Web3(new PrivateKeyProvider(privateKey, rpcFrom))
 	const web3To = new Web3(new PrivateKeyProvider(privateKey, rpcTo))
 
@@ -56,7 +40,7 @@ async function requestBridge() {
     const mainAccount = accounts[0];
 	let balance = await web3To.eth.getBalance(mainAccount)
 	console.log('rpcTo:', rpcTo)
-    log('claim token for account', mainAccount, new BN(balance).dividedBy(new BN('1e18')).toFixed(4));
+    log('claim token for account', mainAccount, new BN(balance).dividedBy(new BN('1e18')).toFixed(4));	
 
 	const bridgeFrom = await new web3From.eth.Contract(GenericBridgeABI, bridgeAddressFrom)
 	//reading events
@@ -65,44 +49,43 @@ async function requestBridge() {
 	fromBlock = parseInt(fromBlock)
 	let endBlock = await web3From.eth.getBlockNumber()
 	endBlock = parseInt(endBlock)
-	let eventList = await readingAllEvents(bridgeFrom, fromBlock, endBlock)
+	let eventList = await requestTxes(mainAccount, fromChainId)
 	for(const e of eventList) {
 		try {
-			console.log('trying to claim')
-			let data = e.returnValues
-			let originToken = data._token
-			let rpcOrigin = config.get(`blockchain.${data._originChainId}.httpProvider`)
+			let data = e
+			let originToken = data.originToken
+			let rpcOrigin = config.get(`blockchain.${data.originChainId}.httpProvider`)
 			let web3Origin = new Web3(new PrivateKeyProvider(privateKey, rpcOrigin))
-			let name, decimals, symbol
-			if (originToken == nativeAddress) {
-				name = config.get(`blockchain.${data._originChainId}.nativeName`)
-				symbol = config.get(`blockchain.${data._originChainId}.nativeSymbol`)
-				decimals = 18
-			} else {
-				let  originTokenContract = await new web3Origin.eth.Contract(IERC20ABI, originToken)
-				name = await originTokenContract.methods.name().call()
-				decimals = await originTokenContract.methods.decimals().call()
-				symbol = await originTokenContract.methods.symbol().call()
-			}
 
-			let chainIdData = [data._originChainId, data._fromChainId, data._toChainId, data._index]
-			if (data._fromChainId != fromChainId || data._toChainId != toChainId) {
+			let chainIdData = [data.originChainId, data.fromChainId, data.toChainId, data.index]
+			if (data.fromChainId != fromChainId || data.toChainId != toChainId) {
 				continue
 			}
-			console.log('chainIdData:', chainIdData)
-			let sig = singer.signClaim(originToken, mainAccount, data._amount, chainIdData, e.transactionHash, name, symbol, decimals)
+			console.log('trying to claim')
+			if (data.claimHash) {
+				console.log('already claim')
+				continue
+			}
+			let sig = await singer.signClaim(data.requestHash, data.fromChainId, data.toChainId, data.index)
+			
+			if (!sig) {
+				console.log('invalid signature')
+				continue
+			}
+
 			const bridgeTo = await new web3To.eth.Contract(GenericBridgeABI, bridgeAddressTo)
 			let alreadyClaim = await bridgeTo.methods.alreadyClaims(sig.msgHash).call()
 			if (!alreadyClaim) {
 				//making claim tx
-				await bridgeTo.methods.claimToken(originToken, mainAccount, data._amount, chainIdData, e.transactionHash, sig.r, sig.s, sig.v, name, symbol, decimals)
+				await bridgeTo.methods.claimToken(originToken, mainAccount, data.amount, chainIdData, data.requestHash, sig.r, sig.s, sig.v, sig.name, sig.symbol, sig.decimals)
 					.send({chainId: web3To.utils.toHex(toChainId), from: mainAccount, gasPrice: gasPrice, gas: 5000000})
 			} else {
 				console.log('already claim')
+				continue
 			}
-			let bridgeToken = await bridgeTo.methods.tokenMap(data._originChainId, data._token).call()
-			if (data._originChainId == data._toChainId) {
-				bridgeToken = data._token
+			let bridgeToken = await bridgeTo.methods.tokenMap(data.originChainId, data.originToken).call()
+			if (data.originChainId == data.toChainId) {
+				bridgeToken = data.originToken
 				console.log('done, claimed token:', bridgeToken)
 			} else {
 				console.log('done, claimed token:', bridgeToken)
@@ -115,4 +98,4 @@ async function requestBridge() {
 	console.log('finish')
 }
 
-requestBridge()
+claimToken()
