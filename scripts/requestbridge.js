@@ -43,7 +43,8 @@ async function requestBridge() {
 		if (erc20Address == nativeAddress) {
 			value = amountInWei
 		}
-
+		let supportedChainIds = await bridge.methods.supportedChainIds(97).call()
+		console.log('supportedChainIds:', supportedChainIds)
 		await bridge.methods.requestBridge(erc20Address, amountInWei, toChainId).send({chainId: web3.utils.toHex(fromChainId), from: mainAccount, gas: 1000000, gasPrice: gasPrice, value: value})
 		console.log('done')
 		}catch (e) {
